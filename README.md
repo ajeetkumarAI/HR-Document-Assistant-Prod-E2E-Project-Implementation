@@ -27,6 +27,7 @@ A production-grade **Retrieval-Augmented Generation (RAG)** service that answers
 13. [Docker deployment](#13-docker-deployment)
 14. [Design decisions](#14-design-decisions)
 15. [Troubleshooting](#15-troubleshooting)
+16. [Interview preparation kit](#16-interview-preparation-kit)
 
 ---
 
@@ -473,7 +474,10 @@ HR Document Assistant Prod/
 │
 ├── docs/images/                 ← UI screenshots + architecture diagram images
 │
-├── tests/                       ← 44 automated tests
+├── preparation/                 ← interview prep kit (pitch, Q&A, demo script, coding round)
+│   └── README.md                ← start here
+│
+├── tests/                       ← 45 automated tests
 │   ├── conftest.py
 │   ├── test_app.py
 │   ├── test_ingestion.py
@@ -1234,6 +1238,30 @@ This starts the API (2 workers), the Streamlit UI (http://localhost:8501), a Qdr
 | UI sidebar says "API not reachable" | API not running, or wrong URL | Start `python main.py` first; check the API URL in the sidebar |
 | UI Documents tab shows a warning | Not signed in as admin | Choose **HR Admin** in the sidebar |
 | Keyword matches seem off after updating the code | Index built with an older tokenizer | Stop the API, run `python -m scripts.ingest --force` |
+
+---
+
+## 16. Interview preparation kit
+
+The [`preparation/`](preparation/README.md) folder lets you (or anyone) prepare this project end to end for a GenAI / Agentic AI
+interview. It is mapped to the
+[Company-Specific Gen AI & Agentic AI Interview Question-Answer Bank](https://github.com/ajeetkumarAI/Company-Specific-Gen-AI-Agentic-AI-Interview-Question-Answer-Bank).
+
+| File | Use it for |
+|---|---|
+| [`README.md`](preparation/README.md) | Index, 1-day / 3-day / 7-day study plans |
+| [`01_project_pitch.md`](preparation/01_project_pitch.md) | 30 s / 2 min / 5 min pitches, STAR stories from real issues in this project |
+| [`02_architecture_walkthrough.md`](preparation/02_architecture_walkthrough.md) | Whiteboard script, design decisions, measured timings |
+| [`03_rag_deep_dive.md`](preparation/03_rag_deep_dive.md) | Chunking, hybrid search, HNSW, reranking, evaluation |
+| [`04_llm_fundamentals.md`](preparation/04_llm_fundamentals.md) | LLM concepts tied to the code |
+| [`05_production_engineering.md`](preparation/05_production_engineering.md) | Caching, retries, fallback, cost, observability |
+| [`06_security_and_guardrails.md`](preparation/06_security_and_guardrails.md) | RBAC, prompt injection, PII |
+| [`07_agentic_ai.md`](preparation/07_agentic_ai.md) | Agents, and how to extend this project into one |
+| [`08_scenario_and_behavioral.md`](preparation/08_scenario_and_behavioral.md) | Client scenarios and behavioural answers |
+| [`09_coding_round.md`](preparation/09_coding_round.md) | Tested coding solutions (`python preparation/coding_solutions.py`) |
+| [`10_question_bank_index.md`](preparation/10_question_bank_index.md) | Every question in the bank mapped to an answer |
+| [`11_live_demo_script.md`](preparation/11_live_demo_script.md) | 5-minute live demo |
+| [`cheat_sheet.md`](preparation/cheat_sheet.md) | One page to read 10 minutes before the interview |
 
 ---
 

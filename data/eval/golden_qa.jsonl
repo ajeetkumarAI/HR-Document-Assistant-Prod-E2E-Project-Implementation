@@ -1,0 +1,16 @@
+{"question": "How many days of sick leave do employees get per year?", "role": "employee", "expected_source": "leave_policy.md", "expected_keywords": ["12"]}
+{"question": "How much earned leave can I carry forward?", "role": "employee", "expected_source": "leave_policy.md", "expected_keywords": ["45"]}
+{"question": "When do I need a medical certificate for sick leave?", "role": "employee", "expected_source": "leave_policy.md", "expected_keywords": ["2"]}
+{"question": "How long is paternity leave?", "role": "employee", "expected_source": "leave_policy.md", "expected_keywords": ["10"]}
+{"question": "How many days must I work from the office each week?", "role": "employee", "expected_source": "work_from_home_policy.md", "expected_keywords": ["3"]}
+{"question": "What is the monthly internet allowance for hybrid employees?", "role": "employee", "expected_source": "work_from_home_policy.md", "expected_keywords": ["1,500"]}
+{"question": "Can I work from outside India and for how long?", "role": "employee", "expected_source": "work_from_home_policy.md", "expected_keywords": ["15"]}
+{"question": "What is the hotel limit per night in Bengaluru?", "role": "employee", "expected_source": "travel_reimbursement_policy.md", "expected_keywords": ["8,000"]}
+{"question": "What is the per diem for international travel?", "role": "employee", "expected_source": "travel_reimbursement_policy.md", "expected_keywords": ["60"]}
+{"question": "What is the deadline to submit expense claims?", "role": "employee", "expected_source": "travel_reimbursement_policy.md", "expected_keywords": ["30"]}
+{"question": "What is the maximum value of a gift I can accept from a vendor?", "role": "employee", "expected_source": "code_of_conduct.md", "expected_keywords": ["2,000"]}
+{"question": "How do I report sexual harassment?", "role": "employee", "expected_source": "code_of_conduct.md", "expected_keywords": ["Internal Committee"]}
+{"question": "Is Diwali a company holiday in 2026?", "role": "employee", "expected_source": "holidays_2026.csv", "expected_keywords": ["Diwali"]}
+{"question": "How long is a performance improvement plan?", "role": "manager", "expected_source": "performance_review_guidelines.md", "expected_keywords": ["60"]}
+{"question": "What increment does a rating of 4 get?", "role": "hr_admin", "expected_source": "compensation_bands.md", "expected_keywords": ["8%"]}
+{"question": "What is the salary range for band B3?", "role": "employee", "expected_source": null, "expected_keywords": ["couldn't find"]}

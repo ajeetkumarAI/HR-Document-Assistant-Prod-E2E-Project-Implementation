@@ -1,0 +1,124 @@
+# =============================================================================
+# HR Document Assistant - RAG configuration
+# -----------------------------------------------------------------------------
+# Non-secret settings live here. Secrets (API keys) live in .env.
+# Any value can be overridden by an environment variable using "__" as the
+# nesting delimiter, e.g.  LLM__MODEL=gpt-6.1-sol   RETRIEVAL__TOP_K=30
+# =============================================================================
+
+app:
+  name: hr-document-assistant
+  version: 2.0.0
+  environment: dev            # dev | staging | prod
+  log_level: INFO
+  log_dir: logs
+  log_json: true
+  cors_origins: ["*"]
+  max_upload_mb: 25
+  default_role: employee      # role used when auth is disabled
+
+security:
+  auth_enabled: true          # require X-API-Key header (keys + roles in .env -> API_KEYS)
+  rate_limit_per_minute: 60   # per API key, token bucket
+  # Which document access levels each role may retrieve (enforced as a vector-DB filter)
+  role_access:
+    employee: [public]
+    manager: [public, manager]
+    hr_admin: [public, manager, confidential]
+
+ingestion:
+  raw_data_dir: data/raw
+  supported_extensions: [".pdf", ".docx", ".txt", ".md", ".html", ".csv"]
+  default_metadata:
+    department: HR
+    doc_type: policy
+    access_level: public
+    region: global
+
+chunking:
+  strategy: structure_aware   # structure_aware | recursive
+  chunk_size_tokens: 400
+  chunk_overlap_tokens: 60
+  min_chunk_tokens: 30
+  add_context_header: true    # prepend "Document > Section" to the text that gets embedded
+
+embeddings:
+  provider: openai            # openai | hashing (offline / tests)
+  model: text-embedding-3-small
+  dimensions: 1536
+  batch_size: 96
+
+vectordb:
+  provider: qdrant
+  mode: local                 # local (embedded, on-disk) | server (docker / Qdrant Cloud)
+  local_path: data/qdrant
+  url: http://localhost:6333
+  collection: hr_documents
+  distance: cosine
+  hnsw:
+    m: 16                     # graph degree: higher = better recall, more RAM
+    ef_construct: 200         # build-time candidate list
+    ef_search: 128            # query-time candidate list (recall/latency knob)
+    full_scan_threshold: 10000
+    on_disk: false
+  quantization:
+    enabled: false            # int8 scalar quantization (4x less RAM) for large corpora
+    always_ram: true
+  # Fields that get payload indexes so filtered HNSW search stays fast
+  keyword_indexes: [doc_id, source, department, doc_type, category, access_level, region, tags]
+  integer_indexes: [effective_ts]
+
+retrieval:
+  mode: hybrid                # hybrid (dense + BM25 sparse, RRF fusion) | dense | sparse
+  top_k: 20                   # candidates fetched before reranking
+  prefetch_multiplier: 2      # each prefetch branch fetches top_k * multiplier
+  dense_score_threshold: 0.20 # drop weak dense matches before fusion
+  use_query_rewrite: true     # condense follow-ups into standalone questions
+
+reranker:
+  provider: llm               # llm (OpenAI grades passages) | cohere | none
+  cohere_model: rerank-v3.5
+  top_n: 5
+  score_threshold: null       # optional minimum rerank score (provider-specific scale)
+  fail_open: true             # on reranker error keep retrieval order instead of failing
+
+llm:
+  provider: openai
+  model: gpt-6-luna           # fast + cheap; use gpt-6.1-sol / gpt-6-astra for harder questions
+  fallback_model: gpt-5.4-mini
+  utility_model: gpt-6-luna   # query rewriting, LLM reranking
+  reasoning_effort: low       # none | low | medium | high
+  max_output_tokens: 1024
+  temperature: null           # leave null for reasoning models
+  timeout_seconds: 60
+  context_token_budget: 6000  # max tokens of retrieved context sent to the LLM
+
+retry:
+  max_attempts: 4
+  initial_wait_seconds: 0.5
+  max_wait_seconds: 20
+  jitter_seconds: 0.5
+
+cache:
+  backend: memory             # memory | redis
+  redis_url: redis://localhost:6379/0
+  ttl_seconds: 86400
+  embedding_cache: true
+  response_cache: true
+  semantic_cache: true
+  semantic_threshold: 0.95    # cosine similarity needed to reuse a cached answer
+  max_entries: 5000
+
+memory:
+  enabled: true
+  max_turns: 6                # conversation turns kept per session
+  ttl_seconds: 3600
+
+guardrails:
+  max_query_chars: 2000
+  block_prompt_injection: true
+  redact_pii_in_logs: true
+
+tracing:
+  langsmith_enabled: true     # active only when LANGSMITH_API_KEY is set
+  project: hr-document-assistant

@@ -1,0 +1,29 @@
+# ---- API ----
+fastapi>=0.142,<1.0
+uvicorn[standard]>=0.53
+python-multipart>=0.0.32
+pydantic>=2.13,<3
+pydantic-settings>=2.15
+PyYAML>=6.0
+
+# ---- LLM / embeddings / tracing ----
+openai>=3.24
+tiktoken>=0.14
+langsmith>=0.14
+tenacity>=9.1
+
+# ---- Vector DB ----
+qdrant-client>=1.19
+numpy>=2.0
+
+# ---- Document parsing ----
+pypdf>=5.9
+python-docx>=1.2
+beautifulsoup4>=4.15
+
+# ---- Caching / ops ----
+cachetools>=7.2
+redis>=8.1
+prometheus-client>=0.26
+httpx>=0.28
+

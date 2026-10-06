@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=9.1
+pytest-cov>=6.0
+ruff>=0.16
+mypy>=1.17

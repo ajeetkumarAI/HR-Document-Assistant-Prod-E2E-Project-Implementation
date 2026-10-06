@@ -2,7 +2,7 @@
 
 This is the "conductor": it calls every other component in the right order.
 
-    guardrails -> condense follow-up (history) -> exact cache -> embed -> semantic cache
+    guardrails -> exact cache -> condense (real follow-ups only) -> embed -> semantic cache
       -> hybrid retrieve (filters + RBAC) -> rerank -> context budget -> LLM (retry + fallback)
       -> citation validation -> cache + memory write -> metrics / trace metadata
 
@@ -16,6 +16,7 @@ Code layout:
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -59,6 +60,27 @@ class QueryRequest:
     use_cache: bool = True
 
 
+# Words that only make sense with earlier context: "Can I carry THEM forward?", "What about managers?"
+# If a question contains none of these, it is already standalone -> no condense LLM call needed.
+_FOLLOW_UP = re.compile(
+    r"\b(it|its|they|them|their|that|this|those|these|he|she|his|her|there|same|above|previous|"
+    r"also|too|else|more|instead|former|latter)\b"
+    r"|^\s*(and|but|or|so|what about|how about|then)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_follow_up(question: str) -> bool:
+    """Cheap check (microseconds, no API call): does this question depend on the conversation?
+
+    "How many sick leaves do I get per year?"  -> False (self-contained, skip condense)
+    "Can I carry them forward?"                -> True  ("them")
+    "What about managers?"                     -> True  (starts with "what about")
+    "Encashment?"                              -> True  (too short to stand alone)
+    """
+    return bool(_FOLLOW_UP.search(question)) or len(question.split()) < 3
+
+
 class RAGPipeline:
     def __init__(
         self,
@@ -93,6 +115,9 @@ class RAGPipeline:
         """
         if not history or not self.settings.retrieval.use_query_rewrite:
             return question  # first question in a session -> nothing to rewrite, no LLM call
+        if not looks_like_follow_up(question):
+            # Already self-contained -> rewriting would cost ~1-3 s and return the same question
+            return question
         try:
             result = self.llm.generate(
                 CONDENSE_PROMPT,
@@ -106,6 +131,13 @@ class RAGPipeline:
         except Exception as exc:  # rewriting is an optimisation - never fail the request on it
             logger.warning("Query condensation failed; using raw question", extra={"error": str(exc)})
             return question
+
+    @staticmethod
+    def _from_cache(cached: dict[str, Any]) -> dict[str, Any]:
+        """A cached answer cost NOTHING this time: no LLM call, so report 0 tokens.
+        (The stored response still carries the tokens of the ORIGINAL call - don't show those
+        as if they were spent again.) `model` is kept: it tells you which model wrote the answer."""
+        return {**cached, "usage": {"input_tokens": 0, "output_tokens": 0}, "used_fallback_model": False}
 
     @staticmethod
     def _citations(used: list[RetrievedChunk], cited: list[int]) -> list[dict[str, Any]]:
@@ -145,22 +177,30 @@ class RAGPipeline:
         with timer.stage("guardrails"):  # timer records how long each stage takes (timings_ms)
             question = check_input(req.question, g.max_query_chars, g.block_prompt_injection)
 
-        # ---- 2. Follow-up -> standalone question ------------------------------
-        history = self.memory.get(req.session_id)
-        with timer.stage("condense"):
-            standalone = self._condense(question, history)
-
-        # ---- 3. Cache scope ------------------------------------------------------
+        # ---- 2. Cache scope ------------------------------------------------------
         # The SAME question can have different correct answers for different roles/filters
         # (an hr_admin can see confidential docs). So the cache is partitioned by role + filters.
         filters_key = req.filters.cache_key() if req.filters else {}
         scope = self.cache.scope(req.role, filters_key)
-        use_cache = req.use_cache and not history  # answers to follow-ups depend on the conversation
+        use_cache = req.use_cache
 
-        # ---- 4. Exact cache: identical question asked before? (no API call needed) --
+        # ---- 3. Exact cache on the question AS TYPED (before any LLM call) ------------
+        # Cache keys are always standalone questions, so if the typed text matches one, it was
+        # self-contained -> safe to reuse even in the middle of a conversation. Cost: ~1 ms.
         if use_cache:
             with timer.stage("cache_exact"):
-                hit = self.cache.get_exact(standalone, scope)
+                hit = self.cache.get_exact(question, scope)
+            if hit:
+                return {"cached": {**hit, "cache": "exact"}, "question": question, "standalone": question}
+
+        # ---- 4. Follow-up -> standalone question (LLM call ONLY for real follow-ups) -----
+        history = self.memory.get(req.session_id)
+        with timer.stage("condense"):
+            standalone = self._condense(question, history)
+
+        # A follow-up that was rewritten may now match a cached standalone question
+        if use_cache and standalone != question:
+            hit = self.cache.get_exact(standalone, scope)
             if hit:
                 return {"cached": {**hit, "cache": "exact"}, "question": question, "standalone": standalone}
 
@@ -194,9 +234,10 @@ class RAGPipeline:
             "qvec": qvec,
             "used": used,  # passages actually sent to the LLM (may be < ranked if over budget)
             "use_cache": use_cache,
-            # Previous turns + the new message containing context and question
-            "messages": history
-            + [{"role": "user", "content": USER_PROMPT.format(context=context, question=standalone)}],
+            # Only the standalone question + context. The chat history is NOT resent: condensing
+            # already folded the needed context into the question, so resending it would only add
+            # tokens (cost + latency) on every turn.
+            "messages": [{"role": "user", "content": USER_PROMPT.format(context=context, question=standalone)}],
         }
 
     def _finalize(
@@ -275,7 +316,7 @@ class RAGPipeline:
         # Cache hit -> return immediately (milliseconds, no LLM cost)
         if "cached" in prep:
             self.memory.append(req.session_id, prep["question"], prep["cached"]["answer"])
-            return self._envelope(prep["cached"], timer, req)
+            return self._envelope(self._from_cache(prep["cached"]), timer, req)
 
         llm_result = None
         if prep["used"]:
@@ -297,7 +338,7 @@ class RAGPipeline:
         prep = self._prepare(req, timer)
         if "cached" in prep:
             self.memory.append(req.session_id, prep["question"], prep["cached"]["answer"])
-            final = self._envelope(prep["cached"], timer, req)
+            final = self._envelope(self._from_cache(prep["cached"]), timer, req)
             yield {"type": "token", "content": final["answer"]}  # whole cached answer as one token
             yield {"type": "done", "response": final}
             return

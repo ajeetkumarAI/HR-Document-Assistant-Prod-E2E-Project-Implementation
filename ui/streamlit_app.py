@@ -132,15 +132,19 @@ def render_details(resp: dict[str, Any], idx: int) -> None:
     """Citations, timing and model info under an assistant message."""
     citations = resp.get("citations") or []
     cache = resp.get("cache")
-    meta = f"model `{resp.get('model') or '-'}`"
-    if cache:
-        meta += f" · cache **{cache}**"
     usage = resp.get("usage") or {}
-    if usage.get("input_tokens"):
-        meta += f" · tokens {usage.get('input_tokens')} in / {usage.get('output_tokens')} out"
     total = (resp.get("timings_ms") or {}).get("total")
-    if total is not None:
-        meta += f" · {total / 1000:.2f} s"
+    # Show milliseconds for fast (cached) answers, seconds otherwise: "1 ms" reads better than "0.00 s"
+    took = "" if total is None else (f"{total:.0f} ms" if total < 1000 else f"{total / 1000:.2f} s")
+    if cache:
+        # Served from cache: no OpenAI call was made -> 0 tokens, near-instant
+        meta = f"⚡ **from cache ({cache})** · 0 tokens · {took} · originally answered by `{resp.get('model') or '-'}`"
+    else:
+        meta = f"model `{resp.get('model') or '-'}`"
+        if usage.get("input_tokens"):
+            meta += f" · tokens {usage.get('input_tokens')} in / {usage.get('output_tokens')} out"
+        if took:
+            meta += f" · {took}"
     st.caption(meta)
 
     if citations:

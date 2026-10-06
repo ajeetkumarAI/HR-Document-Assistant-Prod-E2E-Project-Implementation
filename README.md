@@ -177,16 +177,18 @@ The backend has two flows that share the same vector database:
                         │
                         ▼
  ┌──────────────────────────────────────────────┐
- │  2. CONDENSE (only if chat history exists)   │
- │  "and for managers?" → full standalone       │
- │  question (OpenAI utility model)             │
- └──────────────────────┬───────────────────────┘
-                        │
-                        ▼
- ┌──────────────────────────────────────────────┐
- │  3. EXACT CACHE                utils/cache.py │──── HIT ───► return cached answer
+ │  2. EXACT CACHE                utils/cache.py │──── HIT ───► return cached answer
+ │  same question asked before? (~1 ms)         │              (works mid-conversation too)
  └──────────────────────┬───────────────────────┘
                         │ miss
+                        ▼
+ ┌──────────────────────────────────────────────┐
+ │  3. CONDENSE (only for real follow-ups)      │
+ │  "can I carry them forward?" → standalone    │
+ │  question. Self-contained questions skip     │
+ │  this LLM call entirely.                     │
+ └──────────────────────┬───────────────────────┘
+                        │
                         ▼
  ┌──────────────────────────────────────────────┐
  │  4. EMBED QUESTION    embeddings/embedder.py  │
@@ -279,7 +281,7 @@ Example: an employee asks **"How many sick leaves do I get per year?"**
 
 1. **API key check:** `dev-employee-key` maps to role `employee`, which may see only `public` documents.
 2. **Guardrails:** the question is not empty, under 2,000 characters and contains no injection pattern.
-3. **Cache:** the first time it's a miss, so the pipeline continues.
+3. **Cache:** the first time it's a miss, so the pipeline continues. (The question is self-contained, so the condense step is skipped even inside a conversation.)
 4. **Embedding:** the question becomes a 1,536-number vector (OpenAI).
 5. **Hybrid search:** Qdrant finds chunks similar in meaning *and* chunks containing "sick", "leave", "year". Both lists are merged with RRF. Only chunks with `access_level = public` are considered.
 6. **Rerank:** OpenAI scores the 20 candidates. *Leave Policy > Sick Leave* scores 10/10.
@@ -383,6 +385,8 @@ HR Document Assistant Prod/
 │
 ├── ui/
 │   └── streamlit_app.py         ← web UI (chat + document admin)
+│
+├── docs/images/                 ← README screenshots of the web UI
 │
 ├── tests/                       ← 44 automated tests
 │   ├── conftest.py
@@ -577,7 +581,9 @@ HR Document Assistant Prod/
 **`rag_pipeline.py`: `RAGPipeline`**
 - `answer()`: the full query flow from section 2.2; returns answer, citations, model, tokens, cache status, per-stage timings, request id, LangSmith run id.
 - `stream()`: the same flow as Server-Sent Events: `sources` → `token`… → `done`.
-- Only grounded answers are cached; "not found" answers are never cached. Follow-up questions skip the cache because their meaning depends on the conversation.
+- Only grounded answers are cached; "not found" answers are never cached.
+- Cache keys are always **standalone** questions, so a repeated question hits the cache even in the middle of a conversation. Real follow-ups ("can I carry *them* forward?") are first rewritten by the condense step, and only those trigger that extra LLM call (`looks_like_follow_up()`, a cheap word check).
+- The answer model receives only the standalone question + context, not the whole chat history, so token usage stays flat as the conversation grows.
 
 ---
 
@@ -667,6 +673,7 @@ HR Document Assistant Prod/
 - **Chat tab:** `stream_answer()` reads the SSE stream and prints tokens as they arrive; `render_details()` shows sources, rerank scores, timings, and a 👍/👎 that goes to LangSmith (when tracing is on).
 - **Documents tab (HR Admin):** upload form with metadata → `POST /api/v1/documents`; table of indexed documents; delete; re-index.
 - **System tab:** `/health`, `/ready`, clear cache.
+- Screenshots: see [Step 9](#step-9-start-the-web-ui-terminal-2).
 - Settings via env vars: `HR_API_URL` (default `http://localhost:8000`), `HR_EMPLOYEE_KEY`, `HR_MANAGER_KEY`, `HR_ADMIN_KEY`.
 
 ---
@@ -834,6 +841,32 @@ Your browser opens http://localhost:8501:
 - **💬 Chat:** ask questions; answers stream in, with **📎 Sources** (document, section, rerank score) and **⏱ Timings** under each answer. Follow-up questions work because the session is remembered.
 - **📂 Documents:** as **HR Admin**, upload PDFs/DOCX with category, access level and effective date; see and delete indexed documents.
 - **⚙️ System:** health/readiness and cache controls.
+
+#### What it looks like
+
+**1. Same question asked twice: fresh answer, then served from cache**
+
+![HR Assistant chat: a fresh answer in 10 s, then the same question answered from cache in 1 ms with 0 tokens](docs/images/ui-chat.png)
+
+- The **sidebar** shows the API is ready (`31 chunks · reranker: llm`), the signed-in role (**Employee**), and the search filters.
+- **First answer:** `model gpt-6-luna · tokens 712 in / 34 out · 10.01 s`. The full pipeline ran: embed → hybrid search → rerank → generate.
+- **Second, identical question:** `⚡ from cache (exact) · 0 tokens · 1 ms`. No OpenAI call was made, so it was about 10,000× faster and free.
+- Each answer ends with a citation like **[1]**, which points to the exact policy passage it came from.
+
+**2. Sources and timings for a cached answer**
+
+![Expanded Sources and Timings panels under a cached answer](docs/images/ui-sources-timings.png)
+
+- **📎 Sources:** the passage the answer is based on: document **Leave Policy**, section **Leave Policy > Sick Leave**, file `leave_policy.md`, effective **2026-01-01**, **rerank 10/10**, ✅ **cited**. You can check the answer against the original policy text.
+- **⏱ Timings (ms):** only two steps ran for the cached answer:
+
+  | Step | Time | What it is |
+  |---|---|---|
+  | `guardrails` | 0.03 ms | Input safety checks |
+  | `cache_exact` | 0.15 ms | Found the same question in the answer cache |
+  | **`total`** | **0.52 ms** | No embedding, search, rerank or LLM call |
+
+  For a **new** question you'll also see `embed_query`, `retrieve`, `rerank` and `generate`, and `condense` for real follow-ups like "can I carry *them* forward?".
 
 ### Step 10 (optional): Run everything with Docker
 

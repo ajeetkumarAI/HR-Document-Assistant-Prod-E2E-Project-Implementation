@@ -55,6 +55,30 @@ A production-grade **Retrieval-Augmented Generation (RAG)** service that answers
 
 ### 2.0 System overview
 
+Who talks to what. Solid arrows are requests; dotted arrows are optional paths.
+
+```mermaid
+flowchart TB
+    U["👤 Employee / Manager / HR Admin"] --> UI["🖥️ Streamlit web UI<br/>ui/streamlit_app.py · port 8501"]
+    U -.-> SW["📄 Swagger · curl · other apps"]
+    UI -->|"HTTP + X-API-Key"| API
+    SW -->|"HTTP + X-API-Key"| API
+    API["⚡ FastAPI backend · port 8000<br/>auth · roles · rate limit · request id · validation"]
+    API -->|"questions"| RAG["🧠 RAG pipeline<br/>src/pipeline/rag_pipeline.py"]
+    API -->|"document uploads"| ING["📥 Ingestion pipeline<br/>src/pipeline/ingestion_pipeline.py"]
+    RAG --> CACHE[("🗄️ Cache<br/>memory or Redis")]
+    RAG --> OAI["🤖 OpenAI<br/>embeddings · rerank · gpt-6-luna"]
+    RAG --> QD[("🔎 Qdrant vector DB<br/>dense + sparse + metadata")]
+    ING --> OAI
+    ING --> QD
+    RAG -.->|"traces + feedback"| LS["📊 LangSmith"]
+```
+
+> Diagram not showing? Your viewer may not support Mermaid (e.g. VS Code without a Mermaid extension). Open the image version: [docs/images/arch-overview.png](docs/images/arch-overview.png)
+
+<details>
+<summary>Plain-text version</summary>
+
 ```
  ┌─────────────────────────┐        ┌─────────────────────────┐
  │  Streamlit web UI       │        │  Any other client       │
@@ -88,12 +112,36 @@ A production-grade **Retrieval-Augmented Generation (RAG)** service that answers
             └──────────────┘
 ```
 
+</details>
+
+
 The backend has two flows that share the same vector database:
 
 - **Ingestion flow:** turns HR documents into searchable chunks (runs when documents are added or changed).
 - **Query flow:** answers a user's question (runs on every API request).
 
 ### 2.1 Ingestion flow
+
+What happens when documents are indexed (`python -m scripts.ingest` or an upload).
+
+```mermaid
+flowchart TB
+    D["📄 HR documents in data/raw<br/>PDF · DOCX · MD · TXT · HTML · CSV"] --> L["📖 Load file + extract metadata<br/>loader.py · metadata.py"]
+    L --> CH{"🔁 Checksum changed<br/>since last run?"}
+    CH -- "no" --> SK["⏭️ Skip file<br/>no embedding cost"]
+    CH -- "yes" --> CK["✂️ Chunk by headings<br/>~400 tokens · 60 overlap<br/>chunker.py"]
+    CK --> DV["🔢 Dense vectors<br/>OpenAI text-embedding-3-small"]
+    CK --> SV["🔤 Sparse vectors<br/>BM25 keyword weights"]
+    DV --> DEL["🗑️ Delete the old version's chunks"]
+    SV --> DEL
+    DEL --> UP[("🔎 Upsert into Qdrant<br/>HNSW index + metadata payload")]
+    UP --> INV["♻️ Invalidate the answer cache"]
+```
+
+> Diagram not showing? Your viewer may not support Mermaid (e.g. VS Code without a Mermaid extension). Open the image version: [docs/images/arch-ingestion.png](docs/images/arch-ingestion.png)
+
+<details>
+<summary>Plain-text version</summary>
 
 ```
  ┌──────────────────────────────────────────────┐
@@ -153,7 +201,41 @@ The backend has two flows that share the same vector database:
  └──────────────────────────────────────────────┘
 ```
 
+</details>
+
+
 ### 2.2 Query flow
+
+What happens on every question. Diamonds are decisions; most questions stop early at a cache hit.
+
+```mermaid
+flowchart TB
+    Q["❓ Question + X-API-Key"] --> AUTH{"🔐 Valid key and<br/>under rate limit?"}
+    AUTH -- "no" --> E401["❌ HTTP 401 / 429"]
+    AUTH -- "yes" --> G{"🛡️ Guardrails pass?<br/>length · prompt injection"}
+    G -- "no" --> E400["❌ HTTP 400"]
+    G -- "yes" --> C1{"⚡ Exact cache hit?"}
+    C1 -- "yes" --> R1["✅ Cached answer<br/>~1 ms · 0 tokens"]
+    C1 -- "no" --> F{"💬 Follow-up question?<br/>e.g. 'can I carry them forward?'"}
+    F -- "yes" --> CD["✍️ Condense into a standalone question<br/>OpenAI utility model"]
+    F -- "no" --> EM
+    CD --> EM["🔢 Embed the question<br/>text-embedding-3-small · cached"]
+    EM --> C2{"⚡ Semantic cache hit?<br/>similarity ≥ 0.95"}
+    C2 -- "yes" --> R1
+    C2 -- "no" --> HS["🔎 Hybrid search in Qdrant<br/>dense + BM25 → RRF · top 20<br/>metadata filters + role access"]
+    HS --> RR["🏅 Rerank → best 5<br/>OpenAI scores each passage 0-10"]
+    RR --> AN{"📚 Any relevant<br/>passages left?"}
+    AN -- "no" --> NF["🙅 'I couldn't find this…'<br/>no LLM call"]
+    AN -- "yes" --> GEN["🤖 Generate the answer<br/>gpt-6-luna · retry → fallback model"]
+    GEN --> CIT["🔗 Validate citations [1]…[5]"]
+    CIT --> SAVE["💾 Save to cache + chat memory<br/>metrics · LangSmith trace"]
+    SAVE --> R2["✅ Answer + citations + timings"]
+```
+
+> Diagram not showing? Your viewer may not support Mermaid (e.g. VS Code without a Mermaid extension). Open the image version: [docs/images/arch-query.png](docs/images/arch-query.png)
+
+<details>
+<summary>Plain-text version</summary>
 
 ```
  ┌──────────────────────────────────────────────┐
@@ -255,6 +337,9 @@ The backend has two flows that share the same vector database:
  │  cache, timings_ms, request_id, run_id       │
  └──────────────────────────────────────────────┘
 ```
+
+</details>
+
 
 ### 2.3 Supporting services
 
@@ -386,7 +471,7 @@ HR Document Assistant Prod/
 ├── ui/
 │   └── streamlit_app.py         ← web UI (chat + document admin)
 │
-├── docs/images/                 ← README screenshots of the web UI
+├── docs/images/                 ← UI screenshots + architecture diagram images
 │
 ├── tests/                       ← 44 automated tests
 │   ├── conftest.py

@@ -36,6 +36,8 @@ def create_app(settings: Settings | None = None, container: Container | None = N
         settings.tracing.project,
     )
 
+    # lifespan = code that runs ONCE at startup (before `yield`) and once at shutdown (after).
+    # Heavy objects (Qdrant client, OpenAI clients, caches) are built here and shared by all requests.
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.container = container or build_container(settings)
@@ -62,6 +64,8 @@ def create_app(settings: Settings | None = None, container: Container | None = N
     )
     app.add_middleware(RequestContextMiddleware)
 
+    # Exception handlers: turn every error into the SAME JSON shape, with the request_id,
+    # so clients handle errors one way and support can find the matching log lines.
     @app.exception_handler(RAGError)
     async def rag_error_handler(_: Request, exc: RAGError) -> JSONResponse:
         level = logger.error if exc.status_code >= 500 else logger.warning
@@ -88,6 +92,7 @@ def create_app(settings: Settings | None = None, container: Container | None = N
             },
         )
 
+    # Last resort for bugs: log the full stack trace, but never leak it to the client
     @app.exception_handler(Exception)
     async def unhandled_handler(_: Request, exc: Exception) -> JSONResponse:
         logger.exception("Unhandled error")

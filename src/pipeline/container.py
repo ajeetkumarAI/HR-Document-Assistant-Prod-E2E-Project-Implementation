@@ -2,6 +2,12 @@
 
 Swap implementations (embedder, reranker, LLM, cache backend) via config.yaml - no code changes.
 Tests build their own container with offline fakes.
+
+BUILD ORDER (each part needs the ones above it)
+-----------------------------------------------
+    settings ─► cache store ─► embedder (+ embedding cache) ─► LLM ─► reranker (uses LLM)
+             ─► vector store (needs embedder.dimensions) ─► response cache, chat memory
+             ─► ingestion pipeline ─► retriever ─► RAG pipeline
 """
 
 from __future__ import annotations
@@ -62,7 +68,7 @@ def build_container(
         api_key=s.qdrant_api_key.get_secret_value() if s.qdrant_api_key else None,
         local_path=str(s.resolve_path(s.vectordb.local_path)),
     )
-    store.ensure_collection()
+    store.ensure_collection()  # create the Qdrant collection on first run / verify it on later runs
 
     sparse = BM25SparseEncoder()
     response_cache = ResponseCache(kv, c.response_cache, c.semantic_cache, c.semantic_threshold, c.ttl_seconds)

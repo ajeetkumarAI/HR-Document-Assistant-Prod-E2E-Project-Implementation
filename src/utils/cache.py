@@ -7,6 +7,14 @@
 
 All answer-cache keys include the *corpus version*, which is bumped on every ingest/delete,
 so a document update can never serve a stale answer.
+
+HOW THE ANSWER CACHE KEY IS BUILT
+---------------------------------
+    scope = hash( corpus_version | role | filters )        e.g. "a91f..."
+    key   = "resp:" + scope + ":" + hash(normalised question)
+
+    corpus_version 7, employee, no filters, "how many sick leaves"  -> resp:a91f..:3c2e..
+    after a policy is re-uploaded the version becomes 8 -> a NEW scope -> old entry never matches.
 """
 
 from __future__ import annotations
@@ -35,10 +43,18 @@ class KVStore(Protocol):
 
 
 class MemoryKVStore:
-    """Thread-safe TTL + LRU store. Good for a single instance / dev; use Redis when scaling out."""
+    """Thread-safe TTL + LRU store. Good for a single instance / dev; use Redis when scaling out.
+
+    TTL  = entries expire after `ttl` seconds (stale data cleans itself up)
+    LRU  = when `max_entries` is reached, the least-recently-used entry is dropped (bounded RAM)
+    Lock = FastAPI serves requests on several threads; the lock stops two threads corrupting the dict.
+    Limitation: each process has its own copy -> with 2+ workers use Redis so they share one cache.
+    """
 
     def __init__(self, max_entries: int = 5000, ttl: int = 86400) -> None:
         self._data: TTLCache[str, Any] = TTLCache(maxsize=max_entries, ttl=ttl)
+        # counters that must not expire (the corpus version must survive the TTL, or old
+        # answers could become reachable again)
         self._persistent: dict[str, Any] = {}  # counters that must not expire
         self._lock = threading.RLock()
 
@@ -69,12 +85,14 @@ class MemoryKVStore:
 
 
 class RedisKVStore:
+    """Shared cache for multiple API workers / servers. Values are stored as JSON strings."""
+
     def __init__(self, url: str, ttl: int = 86400) -> None:
         import redis
 
         self._r = redis.Redis.from_url(url, decode_responses=True, socket_timeout=2)
         self._ttl = ttl
-        self._r.ping()
+        self._r.ping()  # fail NOW (at startup) if Redis is unreachable, not on the first request
 
     def get(self, key: str) -> Any | None:
         raw = self._r.get(key)
@@ -99,6 +117,8 @@ class RedisKVStore:
 
 
 def build_kv_store(backend: str, redis_url: str, max_entries: int, ttl: int) -> KVStore:
+    """config.yaml cache.backend -> store. If Redis is down we log an error and use memory:
+    the app keeps working (just without a shared cache) instead of refusing to start."""
     if backend == "redis":
         try:
             return RedisKVStore(redis_url, ttl)
@@ -109,6 +129,9 @@ def build_kv_store(backend: str, redis_url: str, max_entries: int, ttl: int) -> 
 
 # =========================================================================== embedding cache
 class EmbeddingCache:
+    """text -> vector. Key includes model + dimensions so switching models never returns
+    a vector of the wrong size/kind."""
+
     PREFIX = "emb:"
 
     def __init__(self, store: KVStore, model: str, dimensions: int, enabled: bool = True) -> None:
@@ -176,6 +199,12 @@ class ResponseCache:
         return hit
 
     def get_semantic(self, query_vec: list[float], scope: str) -> dict[str, Any] | None:
+        """Find a previously answered question with (almost) the same MEANING.
+
+        "How many sick leaves do I get?"  vs  "Sick leave days per year?"  -> similarity 0.96 -> HIT
+        Uses cosine similarity: both vectors are normalised to length 1, so a dot product = cosine.
+        Threshold 0.95 is strict on purpose - a wrong cached answer is worse than a cache miss.
+        """
         if not (self.enabled and self.semantic):
             return None
         index = self.store.get(f"{self.PREFIX}sem:{scope}") or []
@@ -184,8 +213,8 @@ class ResponseCache:
             return None
         q = np.asarray(query_vec, dtype=np.float32)
         q /= np.linalg.norm(q) or 1.0
-        mat = np.asarray([e["vec"] for e in index], dtype=np.float32)
-        sims = mat @ q
+        mat = np.asarray([e["vec"] for e in index], dtype=np.float32)  # one row per cached question
+        sims = mat @ q  # similarity of the new question to every cached one, in one matrix multiply
         best = int(np.argmax(sims))
         if float(sims[best]) >= self.threshold:
             hit = self.store.get(index[best]["key"])
@@ -206,7 +235,8 @@ class ResponseCache:
             with self._lock:
                 idx_key = f"{self.PREFIX}sem:{scope}"
                 index = self.store.get(idx_key) or []
-                index.append({"key": key, "vec": v.round(5).tolist()})
+                index.append({"key": key, "vec": v.round(5).tolist()})  # rounded -> smaller to store
+                # keep only the newest 500 questions per scope -> the similarity check stays fast
                 self.store.set(idx_key, index[-self._MAX_SEMANTIC_PER_SCOPE :], ttl=self.ttl)
 
     def clear(self) -> int:
@@ -215,6 +245,12 @@ class ResponseCache:
 
 # =========================================================================== conversation memory
 class ConversationMemory:
+    """Last N question/answer pairs per session_id, so follow-ups like "and for managers?" work.
+
+    Stored as chat messages:  [{"role": "user", ...}, {"role": "assistant", ...}, ...]
+    Expires after `ttl` (default 1 hour of inactivity).
+    """
+
     PREFIX = "chat:"
 
     def __init__(self, store: KVStore, max_turns: int = 6, ttl: int = 3600, enabled: bool = True) -> None:
@@ -230,6 +266,7 @@ class ConversationMemory:
             return
         history = self.get(session_id)
         history += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+        # 1 turn = 2 messages (user + assistant). Keep only the newest turns -> bounded prompt size.
         self.store.set(self.PREFIX + session_id, history[-2 * self.max_turns :], ttl=self.ttl)
 
     def clear(self, session_id: str) -> None:

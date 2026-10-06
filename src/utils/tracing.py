@@ -40,7 +40,15 @@ def configure_tracing(enabled: bool, api_key: str | None, project: str) -> bool:
 
 
 def traceable(*, name: str | None = None, run_type: str = "chain", **kwargs: Any) -> Callable[[F], F]:
-    """Thin wrapper over ``langsmith.traceable`` that is a no-op when the SDK is missing."""
+    """Thin wrapper over ``langsmith.traceable`` that is a no-op when the SDK is missing.
+
+    Put @traceable on a function and each call becomes a "run" in LangSmith with its inputs,
+    outputs, duration and errors. Nested decorated calls appear as a tree:
+        rag_query
+         ├── hybrid_retrieve
+         └── rerank
+    run_type ("chain", "retriever", "llm", "embedding") controls how LangSmith displays it.
+    """
 
     def decorator(fn: F) -> F:
         if not _LANGSMITH_AVAILABLE:

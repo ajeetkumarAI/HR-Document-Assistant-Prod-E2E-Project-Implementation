@@ -39,7 +39,11 @@ def normalize_text(text: str) -> str:
 
 
 def normalize_query(query: str) -> str:
-    """Canonical form used for exact-match cache keys."""
+    """Canonical form used for exact-match cache keys.
+
+    "  How many Sick leaves?? "  ->  "how many sick leaves"
+    so trivial differences in case / spacing / punctuation still hit the cache.
+    """
     return re.sub(r"\s+", " ", query.strip().lower()).rstrip("?!. ")
 
 
@@ -50,6 +54,8 @@ def sha256(text: str | bytes) -> str:
 
 
 def stable_uuid(*parts: Any) -> str:
+    """Same inputs -> same UUID, on every machine and every run (uuid5 = hash-based).
+    Used for doc_id and chunk_id so re-ingesting overwrites instead of duplicating."""
     return str(uuid.uuid5(_UUID_NAMESPACE, "::".join(str(p) for p in parts)))
 
 
@@ -66,6 +72,8 @@ def _encoder() -> Any | None:
 
 
 def count_tokens(text: str) -> int:
+    """Tokens = the units LLMs read and bill (~4 characters of English each).
+    Chunk sizes and the context budget are measured in tokens, not characters."""
     enc = _encoder()
     if enc is not None:
         return len(enc.encode(text, disallowed_special=()))
@@ -95,7 +103,11 @@ def batched(items: Iterable[T], size: int) -> Iterator[list[T]]:
 
 # --------------------------------------------------------------------------- timing
 class StageTimer:
-    """Collects per-stage latencies (ms) for a request: ``with timer.stage("retrieve"): ...``"""
+    """Collects per-stage latencies (ms) for a request: ``with timer.stage("retrieve"): ...``
+
+    Produces the `timings_ms` you see in every API response:
+        {"embed_query": 380, "retrieve": 21, "rerank": 3981, "generate": 1762, "total": 6200}
+    """
 
     def __init__(self) -> None:
         self.timings: dict[str, float] = {}
@@ -116,7 +128,12 @@ class StageTimer:
 
 # --------------------------------------------------------------------------- retry
 def _is_retryable(exc: BaseException) -> bool:
-    """Retry on transient network / rate-limit / 5xx errors only - never on 4xx client errors."""
+    """Retry on transient network / rate-limit / 5xx errors only - never on 4xx client errors.
+
+    RETRY (temporary, may work in a second):   429 rate limit, 5xx server error, timeout, connection drop
+    DON'T (will fail again identically):        400 bad request, 401 wrong key, 404 unknown model
+    Retrying a 401 four times only wastes time before showing the real error.
+    """
     try:
         import openai
 
@@ -144,7 +161,12 @@ def _is_retryable(exc: BaseException) -> bool:
 def with_retry(
     max_attempts: int = 4, initial: float = 0.5, max_wait: float = 20, jitter: float = 0.5
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    """Exponential backoff with jitter for transient failures (works for sync and async functions)."""
+    """Exponential backoff with jitter for transient failures (works for sync and async functions).
+
+    Wait before attempt 2, 3, 4  ~  0.5s, 1s, 2s ... (doubling, capped at max_wait)
+    + random jitter so 100 clients that failed together don't all retry at the same instant.
+    reraise=True -> after the last attempt the ORIGINAL error is raised (clear message).
+    """
     return retry(
         reraise=True,
         stop=stop_after_attempt(max_attempts),

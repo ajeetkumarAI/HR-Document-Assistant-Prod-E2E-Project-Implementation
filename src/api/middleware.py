@@ -14,6 +14,16 @@ logger = get_logger("api.access")
 
 
 class RequestContextMiddleware:
+    """Runs around EVERY request:
+
+        request in ─► pick/create request_id ─► put it in a context variable (logger reads it)
+                   ─► call the endpoint
+                   ─► add "x-request-id" header to the response
+                   ─► record metrics + one access-log line
+
+    Written as "pure ASGI" (not BaseHTTPMiddleware) so it doesn't buffer streaming responses.
+    """
+
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
@@ -24,6 +34,7 @@ class RequestContextMiddleware:
 
         headers = dict(scope.get("headers") or [])
         incoming = headers.get(b"x-request-id", b"").decode()[:64]
+        # Reuse the caller's id if they sent one (lets a frontend/gateway correlate its own logs)
         request_id = incoming or uuid.uuid4().hex
         token = request_id_var.set(request_id)
         start = time.perf_counter()

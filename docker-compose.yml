@@ -17,6 +17,15 @@ services:
       redis: { condition: service_healthy }
     restart: unless-stopped
 
+  ui:
+    build: .
+    command: ["streamlit", "run", "ui/streamlit_app.py", "--server.port", "8501", "--server.address", "0.0.0.0"]
+    ports: ["8501:8501"]
+    environment:
+      HR_API_URL: http://api:8000
+    depends_on: [api]
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:latest
     ports: ["6333:6333"]

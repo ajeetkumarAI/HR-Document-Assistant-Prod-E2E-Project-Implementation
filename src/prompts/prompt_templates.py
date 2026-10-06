@@ -58,7 +58,16 @@ NO_CONTEXT_ANSWER = (
 
 
 def format_context(chunks: list[RetrievedChunk], token_budget: int) -> tuple[str, list[RetrievedChunk]]:
-    """Render chunks as numbered blocks, stopping at the token budget. Returns (context, chunks used)."""
+    """Render chunks as numbered blocks, stopping at the token budget. Returns (context, chunks used).
+
+    Output example:
+        [1] Source: Leave Policy | Section: Leave Policy > Sick Leave | Effective: 2026-01-01
+        Employees receive 12 days of sick leave per calendar year...
+
+        [2] Source: ...
+    The numbers are what the LLM cites ("...12 days [1]"); the effective date lets it
+    prefer the newest policy when two passages disagree.
+    """
     blocks: list[str] = []
     used: list[RetrievedChunk] = []
     remaining = token_budget

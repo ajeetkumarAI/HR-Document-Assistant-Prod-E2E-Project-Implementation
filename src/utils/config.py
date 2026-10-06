@@ -2,6 +2,12 @@
 
 Precedence (highest first): explicit init kwargs > environment variables > .env > config.yaml.
 Nested keys use "__" in env vars, e.g. ``LLM__MODEL=gpt-6.1-sol``.
+
+WHY TYPED SETTINGS?
+-------------------
+Every value is validated at startup. A typo like `top_k: twenty` or `reranker.provider: llmm`
+stops the app immediately with a clear error, instead of failing on the first user request.
+Code reads settings as attributes with autocomplete:  settings.llm.model,  settings.retrieval.top_k
 """
 
 from __future__ import annotations
@@ -238,6 +244,8 @@ class Settings(BaseSettings):
         return p if p.is_absolute() else PROJECT_ROOT / p
 
 
+# lru_cache(maxsize=1) = build Settings once and reuse the same object everywhere (a singleton).
+# Note: .env / config.yaml are therefore read only at startup -> restart after editing them.
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()

@@ -33,6 +33,9 @@ from src.utils.tracing import log_feedback
 
 logger = get_logger(__name__)
 
+# Two routers: system endpoints live at the root (/health, /ready, /metrics) because
+# load balancers / Kubernetes expect them there; business endpoints are versioned under /api/v1
+# so a future /api/v2 can change the contract without breaking existing clients.
 system_router = APIRouter(tags=["system"])
 router = APIRouter(prefix="/api/v1")
 
@@ -40,13 +43,20 @@ router = APIRouter(prefix="/api/v1")
 # =============================================================================== system
 @system_router.get("/health", response_model=HealthResponse)
 def health(container: Container = Depends(get_container_dep)) -> HealthResponse:
-    """Liveness: the process is up."""
+    """Liveness: the process is up.
+
+    Deliberately checks NOTHING else - if Qdrant is down, restarting this process won't help,
+    so the orchestrator must not kill it. That's what /ready is for.
+    """
     return HealthResponse(status="ok", version=container.settings.app.version)
 
 
 @system_router.get("/ready", response_model=HealthResponse)
 def ready(response: Response, container: Container = Depends(get_container_dep)) -> HealthResponse:
-    """Readiness: dependencies reachable (used by k8s / load balancers)."""
+    """Readiness: dependencies reachable (used by k8s / load balancers).
+
+    503 = "don't send me traffic yet" (e.g. Qdrant still starting). The process stays alive.
+    """
     vectordb_ok = container.store.healthy()
     checks = {
         "vectordb": vectordb_ok,
@@ -63,11 +73,18 @@ def ready(response: Response, container: Container = Depends(get_container_dep))
 
 @system_router.get("/metrics", include_in_schema=False)
 def metrics() -> Response:
+    # Prometheus scrapes this URL every few seconds and stores the counters/histograms
+    # defined in utils/metrics.py. include_in_schema=False hides it from Swagger.
     return Response(generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
 # =============================================================================== query
 def _to_request(body: QueryRequestModel, principal: Principal) -> QueryRequest:
+    """HTTP body + authenticated caller -> internal QueryRequest.
+
+    The role comes from the API KEY, never from the request body, so a user can't
+    send {"role": "hr_admin"} to see confidential documents.
+    """
     return QueryRequest(
         question=body.question,
         role=principal.role,
@@ -81,9 +98,9 @@ def _to_request(body: QueryRequestModel, principal: Principal) -> QueryRequest:
 
 @router.post("/query", response_model=QueryResponseModel, tags=["query"])
 def query(
-    body: QueryRequestModel,
-    principal: Principal = Depends(get_principal),
-    container: Container = Depends(get_container_dep),
+    body: QueryRequestModel,  # FastAPI validates the JSON against QueryRequestModel (422 if invalid)
+    principal: Principal = Depends(get_principal),  # runs auth + rate limit BEFORE this function
+    container: Container = Depends(get_container_dep),  # the shared pipeline objects
 ) -> dict[str, Any]:
     """Ask a question about HR policies. Returns a grounded answer with citations."""
     return container.rag.answer(_to_request(body, principal))
@@ -99,10 +116,17 @@ def query_stream(
     req = _to_request(body, principal)
 
     def events() -> Iterator[str]:
+        # Server-Sent Events wire format - each message is:
+        #     event: token
+        #     data: {"type": "token", "content": "You "}
+        #     <blank line>
+        # Browsers read this with EventSource / fetch streams.
         try:
             for event in container.rag.stream(req):
                 yield f"event: {event['type']}\ndata: {json.dumps(event, default=str)}\n\n"
         except RAGError as exc:
+            # Headers (200) were already sent when streaming started, so we can't return an
+            # HTTP error code any more - send the error as a final event instead.
             yield f"event: error\ndata: {json.dumps({'error': exc.code, 'message': exc.message})}\n\n"
         except Exception:
             logger.exception("Streaming failed")
@@ -111,6 +135,8 @@ def query_stream(
     return StreamingResponse(
         events(),
         media_type="text/event-stream",
+        # no-cache + X-Accel-Buffering: stop proxies (e.g. nginx) from buffering the stream,
+        # otherwise the user sees nothing until the whole answer is done
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
@@ -149,9 +175,15 @@ async def upload_documents(
     _: Principal = Depends(require_admin),
     container: Container = Depends(get_container_dep),
 ) -> dict[str, Any]:
-    """Upload and index one or more documents (hr_admin only)."""
+    """Upload and index one or more documents (hr_admin only).
+
+    This handler is `async` (unlike the others) because reading uploaded files is async in FastAPI.
+    The heavy work (parsing + OpenAI embedding calls) is pushed to a worker thread with
+    run_in_threadpool so it doesn't freeze the server for other users meanwhile.
+    """
     from starlette.concurrency import run_in_threadpool
 
+    # Form fields -> metadata dict (empty fields are left out so they don't override front-matter)
     meta = {
         k: v
         for k, v in {
@@ -169,6 +201,7 @@ async def upload_documents(
     limit = container.settings.app.max_upload_mb * 1024 * 1024
     combined: dict[str, Any] = {"summary": {}, "results": []}
     for f in files:
+        # Read at most limit+1 bytes: enough to detect "too big" without loading a 2 GB file into RAM
         content = await f.read(limit + 1)
         if len(content) > limit:
             raise IngestionError(f"{f.filename} exceeds {container.settings.app.max_upload_mb} MB")
@@ -176,6 +209,7 @@ async def upload_documents(
         combined["results"].extend(report.to_dict()["results"])
     for r in combined["results"]:
         combined["summary"][r["status"]] = combined["summary"].get(r["status"], 0) + 1
+    # Totals across all uploaded files, e.g. {"indexed": 2, "failed": 1, "chunks": 14}
     combined["summary"]["chunks"] = sum(r["chunks"] for r in combined["results"])
     return combined
 

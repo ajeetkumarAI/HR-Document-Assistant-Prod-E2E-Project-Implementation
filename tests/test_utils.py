@@ -24,3 +24,12 @@ def test_response_cache_scope_and_versioning() -> None:
     assert cache.get_semantic([0.0, 1.0, 0.0], scope) is None
     cache.invalidate()
     assert cache.get_exact("how many sick leaves", cache.scope("employee", {})) is None
+
+
+def test_stemmer_aligns_word_forms() -> None:
+    from src.embeddings.sparse import tokenize
+
+    pairs = [("leaves", "leave"), ("employees", "employee"), ("approved", "approve"), ("policies", "policy")]
+    for a, b in pairs:
+        assert tokenize(a) == tokenize(b), (a, b)
+    assert tokenize("How many sick leaves do I get?") == ["many", "sick", "leav", "get"]

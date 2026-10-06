@@ -27,3 +27,6 @@ redis>=8.1
 prometheus-client>=0.26
 httpx>=0.28
 
+
+# ---- Web UI (Streamlit) ----
+streamlit>=1.50
